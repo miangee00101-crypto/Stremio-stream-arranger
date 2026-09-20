@@ -9,10 +9,8 @@ app.use((req, res, next) => {
   next();
 });
 
-// Serve the web UI at root
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Helper: Extract config from Base64 path segment
 function parseConfig(encoded) {
   try {
     const jsonStr = Buffer.from(encoded, 'base64').toString('utf-8');
@@ -22,9 +20,8 @@ function parseConfig(encoded) {
   }
 }
 
-// Helper: Extract resolution from text
 function detectResolution(text) {
-  const str = text.toLowerCase();
+  const str = (text || '').toLowerCase();
   if (str.includes('2160p') || str.includes('4k') || str.includes('uhd')) return '4k';
   if (str.includes('1080p') || str.includes('fhd')) return '1080p';
   if (str.includes('720p') || str.includes('hd')) return '720p';
@@ -33,10 +30,8 @@ function detectResolution(text) {
   return 'unknown';
 }
 
-// Helper: Extract file size in Bytes from stream title/description
 function detectSizeInBytes(text) {
-  // Regex to capture patterns like 1.5 GB, 700 MB, 2.3GiB
-  const match = text.match(/(\d+(?:\.\d+)?)\s*(gb|gib|mb|mib)/i);
+  const match = (text || '').match(/(\d+(?:\.\d+)?)\s*(gb|gib|mb|mib)/i);
   if (!match) return null;
 
   const val = parseFloat(match[1]);
@@ -47,7 +42,6 @@ function detectSizeInBytes(text) {
   return null;
 }
 
-// Sorting Engine
 function sortStreams(streams, config) {
   if (!Array.isArray(streams)) return [];
 
@@ -63,12 +57,10 @@ function sortStreams(streams, config) {
     const providerA = (a.name || '').trim().toLowerCase();
     const providerB = (b.name || '').trim().toLowerCase();
 
-    // 1. Primary Grouping logic
     if (config.group === 'provider' && providerA !== providerB) {
       return providerA.localeCompare(providerB);
     }
 
-    // 2. Resolution Ranking
     if (resA !== resB) {
       let indexA = resPriority.indexOf(resA);
       let indexB = resPriority.indexOf(resB);
@@ -79,7 +71,6 @@ function sortStreams(streams, config) {
       if (indexA !== indexB) return indexA - indexB;
     }
 
-    // 3. File Size Sorting (Secondary or Tie-breaker)
     if (config.size && config.size !== 'none') {
       const sizeA = detectSizeInBytes(textA);
       const sizeB = detectSizeInBytes(textB);
@@ -94,47 +85,69 @@ function sortStreams(streams, config) {
   });
 }
 
-// 1. Dynamic Manifest Endpoint
+// Custom Axios instance that mimics a Desktop Browser
+const http = axios.create({
+  timeout: 10000,
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*'
+  }
+});
+
+// 1. Manifest Endpoint
 app.get('/:config/manifest.json', async (req, res) => {
   const config = parseConfig(req.params.config);
   if (!config) return res.status(400).json({ err: 'Invalid configuration' });
 
   try {
-    const targetUrl = `${config.target}/manifest.json`;
-    const response = await axios.get(targetUrl);
+    const targetBase = config.target.replace(/\/$/, '');
+    const response = await http.get(`${targetBase}/manifest.json`);
     const manifest = response.data;
 
-    // Apply custom name and unique ID
     manifest.id = `org.custom.arranger.${Buffer.from(config.target).toString('hex').slice(0, 8)}`;
     manifest.name = config.name || 'Arranged Streams';
     manifest.description = `Custom arranged proxy for ${config.target}`;
 
     res.json(manifest);
   } catch (error) {
-    res.status(500).json({ err: 'Failed to reach original add-on manifest' });
+    console.error('Manifest Fetch Error:', error.message);
+    res.status(500).json({ err: 'Failed to fetch target manifest' });
   }
 });
 
-// 2. Dynamic Stream Endpoint
-app.get('/:config/stream/:type/:id.json', async (req, res) => {
+// 2. Stream Endpoint (Handles with and without .json extension)
+app.get('/:config/stream/:type/:id', async (req, res) => {
   const config = parseConfig(req.params.config);
   if (!config) return res.status(400).json({ err: 'Invalid configuration' });
 
-  const { type, id } = req.params;
+  const { type } = req.params;
+  // Strip .json if Stremio appended it to the ID parameter
+  const id = req.params.id.replace(/\.json$/, '');
+
+  const targetBase = config.target.replace(/\/$/, '');
+
+  // Try fetching with .json first, then fallback without .json
+  let responseData = null;
 
   try {
-    const targetUrl = `${config.target}/stream/${type}/${id}`;
-    const response = await axios.get(targetUrl);
-    const data = response.data;
-
-    if (data && data.streams) {
-      data.streams = sortStreams(data.streams, config);
+    const res1 = await http.get(`${targetBase}/stream/${type}/${id}.json`);
+    responseData = res1.data;
+  } catch (err1) {
+    try {
+      const res2 = await http.get(`${targetBase}/stream/${type}/${id}`);
+      responseData = res2.data;
+    } catch (err2) {
+      console.error('Stream Fetch Error:', err2.message);
     }
-
-    res.json(data);
-  } catch (error) {
-    res.json({ streams: [] });
   }
+
+  if (responseData && Array.isArray(responseData.streams)) {
+    responseData.streams = sortStreams(responseData.streams, config);
+    return res.json(responseData);
+  }
+
+  // Graceful fallback so Stremio doesn't hang
+  res.json({ streams: [] });
 });
 
 module.exports = app;
