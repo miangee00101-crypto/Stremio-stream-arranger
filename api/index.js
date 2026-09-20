@@ -3,7 +3,6 @@ const axios = require('axios');
 const path = require('path');
 const app = express();
 
-// Global CORS Middleware - Ensures preflights pass without crashing
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -92,14 +91,14 @@ function sortStreams(streams, config) {
 }
 
 const http = axios.create({
-  timeout: 8000,
+  timeout: 12000,
   headers: {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'application/json'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*'
   }
 });
 
-// 1. Dynamic Manifest Endpoint
+// 1. Manifest Endpoint
 app.get('/:config/manifest.json', async (req, res) => {
   const config = parseConfig(req.params.config);
   
@@ -107,7 +106,7 @@ app.get('/:config/manifest.json', async (req, res) => {
     return res.status(400).json({ err: 'Invalid configuration' });
   }
 
-  let targetBase = config.target.replace(/\/$/, '');
+  let targetBase = config.target.trim().replace(/\/$/, '');
   if (!targetBase.endsWith('/manifest.json')) {
     targetBase = `${targetBase}/manifest.json`;
   }
@@ -116,7 +115,6 @@ app.get('/:config/manifest.json', async (req, res) => {
     const response = await http.get(targetBase);
     const manifest = response.data;
 
-    // Build valid Stremio manifest overrides
     manifest.id = `org.custom.arranger.${Buffer.from(config.target).toString('hex').slice(0, 10)}`;
     manifest.name = config.name || 'Arranged Streams';
     manifest.description = 'Custom sorted stream proxy.';
@@ -124,50 +122,52 @@ app.get('/:config/manifest.json', async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     return res.json(manifest);
   } catch (error) {
-    console.error('Manifest Error:', error.message);
-    
-    // Fallback manifest so Stremio still installs cleanly
-    return res.json({
-      id: `org.custom.arranger.fallback`,
-      version: '1.0.0',
-      name: config.name || 'Arranged Streams',
-      description: 'Custom arranged streams proxy',
-      resources: ['stream'],
-      types: ['movie', 'series'],
-      catalogs: []
-    });
+    console.error('Manifest Fetch Error:', error.message);
+    return res.status(500).json({ err: 'Failed to connect to target manifest' });
   }
 });
 
-// 2. Dynamic Stream Endpoint
-app.get('/:config/stream/:type/:id', async (req, res) => {
+// 2. Stream Endpoint (Catches all formats using Wildcard)
+app.get('/:config/stream/:type/:id(*)', async (req, res) => {
   const config = parseConfig(req.params.config);
-  if (!config) return res.json({ streams: [] });
+  if (!config || !config.target) return res.json({ streams: [] });
 
-  const { type } = req.params;
-  const id = req.params.id.replace(/\.json$/, '');
-  const targetBase = config.target.replace(/\/$/, '').replace(/\/manifest\.json$/, '');
+  const { type, id: rawId } = req.params;
+  
+  // Normalize the stream ID path
+  const cleanId = rawId.replace(/\.json$/, '');
+  const targetBase = config.target.trim().replace(/\/$/, '').replace(/\/manifest\.json$/, '');
 
-  let responseData = null;
+  // Trial URLs to match how target add-ons expect paths
+  const testUrls = [
+    `${targetBase}/stream/${type}/${cleanId}.json`,
+    `${targetBase}/stream/${type}/${cleanId}`,
+    `${targetBase}/stream/${type}/${rawId}`
+  ];
 
-  try {
-    const res1 = await http.get(`${targetBase}/stream/${type}/${id}.json`);
-    responseData = res1.data;
-  } catch (err1) {
+  let streams = [];
+
+  for (const url of testUrls) {
     try {
-      const res2 = await http.get(`${targetBase}/stream/${type}/${id}`);
-      responseData = res2.data;
-    } catch (err2) {
-      console.error('Stream Fetch Error:', err2.message);
+      console.log(`Fetching from target: ${url}`);
+      const response = await http.get(url);
+      
+      if (response.data && Array.isArray(response.data.streams)) {
+        streams = response.data.streams;
+        console.log(`Successfully retrieved ${streams.length} streams.`);
+        break;
+      }
+    } catch (err) {
+      console.log(`Failed attempt for ${url}: ${err.message}`);
     }
   }
 
-  if (responseData && Array.isArray(responseData.streams)) {
-    responseData.streams = sortStreams(responseData.streams, config);
-    return res.json(responseData);
+  if (streams.length > 0) {
+    streams = sortStreams(streams, config);
   }
 
-  res.json({ streams: [] });
+  res.setHeader('Content-Type', 'application/json');
+  return res.json({ streams });
 });
 
 module.exports = app;
