@@ -3,9 +3,10 @@ const axios = require('axios');
 const path = require('path');
 const app = express();
 
+// Global CORS Middleware
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') {
@@ -25,17 +26,14 @@ function parseConfig(encoded) {
   }
 }
 
-// 1. Combine all stream fields into a single search text
 function getStreamText(stream) {
   const name = stream.name || '';
   const title = stream.title || '';
   const desc = stream.description || '';
   const group = (stream.behaviorHints && stream.behaviorHints.bingeGroup) || '';
-  
   return `${name} ${title} ${desc} ${group}`.toLowerCase();
 }
 
-// 2. Exact resolution detector
 function detectResolution(text) {
   if (/\b(2160p|4k|uhd)\b/i.test(text)) return '4k';
   if (/\b(1080p|fhd)\b/i.test(text)) return '1080p';
@@ -45,7 +43,6 @@ function detectResolution(text) {
   return 'unknown';
 }
 
-// 3. Size detector in Bytes
 function detectSizeInBytes(text) {
   const match = text.match(/(\d+(?:\.\d+)?)\s*(gb|gib|mb|mib)\b/i);
   if (!match) return null;
@@ -58,11 +55,9 @@ function detectSizeInBytes(text) {
   return null;
 }
 
-// 4. Enhanced Sorting Engine
 function sortStreams(streams, config) {
   if (!Array.isArray(streams) || streams.length === 0) return [];
 
-  // Parse user requested priority or set fallback
   const userResPriority = (config.res && config.res.length > 0)
     ? config.res.map(r => r.trim().toLowerCase())
     : ['1080p', '4k', '720p', '480p', '360p'];
@@ -74,12 +69,12 @@ function sortStreams(streams, config) {
     const providerA = (a.name || '').trim().toLowerCase();
     const providerB = (b.name || '').trim().toLowerCase();
 
-    // Strategy 1: Provider Grouping
+    // Grouping strategy
     if (config.group === 'provider' && providerA !== providerB) {
       return providerA.localeCompare(providerB);
     }
 
-    // Strategy 2: Resolution Ordering
+    // Resolution priority
     const resA = detectResolution(textA);
     const resB = detectResolution(textB);
 
@@ -87,16 +82,15 @@ function sortStreams(streams, config) {
       let indexA = userResPriority.indexOf(resA);
       let indexB = userResPriority.indexOf(resB);
 
-      // Place unknown resolutions at the very bottom
       if (indexA === -1) indexA = 999;
       if (indexB === -1) indexB = 999;
 
       if (indexA !== indexB) {
-        return indexA - indexB; // Lower index = higher priority
+        return indexA - indexB;
       }
     }
 
-    // Strategy 3: File Size Ordering
+    // File size priority
     if (config.size && config.size !== 'none') {
       const sizeA = detectSizeInBytes(textA);
       const sizeB = detectSizeInBytes(textB);
@@ -119,69 +113,94 @@ const http = axios.create({
   }
 });
 
-// 1. Manifest Endpoint
-app.get('/:config/manifest.json', async (req, res) => {
-  const config = parseConfig(req.params.config);
-  
+// Universal Router using raw URL parsing
+app.get('*', async (req, res) => {
+  const reqPath = req.path; // e.g. /BASE64/stream/movie/tt0111161.json
+
+  // Handle Root URL (Serves Config HTML)
+  if (reqPath === '/' || reqPath === '/index.html') {
+    return res.sendFile(path.join(__dirname, '../public/index.html'));
+  }
+
+  // Split path into segments
+  const segments = reqPath.split('/').filter(Boolean);
+
+  if (segments.length < 2) {
+    return res.status(400).json({ err: 'Invalid route' });
+  }
+
+  const rawConfig = segments[0];
+  const config = parseConfig(rawConfig);
+
   if (!config || !config.target) {
-    return res.status(400).json({ err: 'Invalid configuration' });
+    return res.status(400).json({ err: 'Invalid Base64 configuration' });
   }
 
-  let targetBase = config.target.trim().replace(/\/$/, '');
-  if (!targetBase.endsWith('/manifest.json')) {
-    targetBase = `${targetBase}/manifest.json`;
-  }
+  // Handle Manifest Request
+  if (segments[1] === 'manifest.json') {
+    let targetBase = config.target.trim().replace(/\/$/, '');
+    if (!targetBase.endsWith('/manifest.json')) {
+      targetBase = `${targetBase}/manifest.json`;
+    }
 
-  try {
-    const response = await http.get(targetBase);
-    const manifest = response.data;
-
-    manifest.id = `org.custom.arranger.${Buffer.from(config.target).toString('hex').slice(0, 10)}`;
-    manifest.name = config.name || 'Arranged Streams';
-    manifest.description = 'Custom sorted stream proxy.';
-
-    res.setHeader('Content-Type', 'application/json');
-    return res.json(manifest);
-  } catch (error) {
-    return res.status(500).json({ err: 'Failed to connect to target manifest' });
-  }
-});
-
-// 2. Stream Endpoint
-app.get('/:config/stream/:type/:id(*)', async (req, res) => {
-  const config = parseConfig(req.params.config);
-  if (!config || !config.target) return res.json({ streams: [] });
-
-  const { type, id: rawId } = req.params;
-  const cleanId = rawId.replace(/\.json$/, '');
-  const targetBase = config.target.trim().replace(/\/$/, '').replace(/\/manifest\.json$/, '');
-
-  const testUrls = [
-    `${targetBase}/stream/${type}/${cleanId}.json`,
-    `${targetBase}/stream/${type}/${cleanId}`,
-    `${targetBase}/stream/${type}/${rawId}`
-  ];
-
-  let streams = [];
-
-  for (const url of testUrls) {
     try {
-      const response = await http.get(url);
-      if (response.data && Array.isArray(response.data.streams)) {
-        streams = response.data.streams;
-        break;
-      }
-    } catch (err) {
-      // Continue trying next path option
+      const response = await http.get(targetBase);
+      const manifest = response.data;
+
+      manifest.id = `org.custom.arranger.${Buffer.from(config.target).toString('hex').slice(0, 10)}`;
+      manifest.name = config.name || 'Arranged Streams';
+      manifest.description = 'Custom sorted stream proxy.';
+
+      res.setHeader('Content-Type', 'application/json');
+      return res.json(manifest);
+    } catch (error) {
+      console.error('Manifest Error:', error.message);
+      return res.status(500).json({ err: 'Failed to connect to target manifest' });
     }
   }
 
-  if (streams.length > 0) {
-    streams = sortStreams(streams, config);
+  // Handle Stream Request (/BASE64/stream/:type/:id)
+  if (segments[1] === 'stream' && segments.length >= 4) {
+    const type = segments[2];
+    
+    // Reconstruct raw ID from remaining path segments (handles kitsu:123:1, tt123.json, etc.)
+    const rawIdPath = segments.slice(3).join('/');
+    const cleanId = rawIdPath.replace(/\.json$/, '');
+
+    const targetBase = config.target.trim().replace(/\/$/, '').replace(/\/manifest\.json$/, '');
+
+    const testUrls = [
+      `${targetBase}/stream/${type}/${cleanId}.json`,
+      `${targetBase}/stream/${type}/${cleanId}`,
+      `${targetBase}/stream/${type}/${rawIdPath}`
+    ];
+
+    let streams = [];
+
+    for (const url of testUrls) {
+      try {
+        console.log(`[Stream Proxy] Requesting target: ${url}`);
+        const response = await http.get(url);
+        
+        if (response.data && Array.isArray(response.data.streams)) {
+          streams = response.data.streams;
+          console.log(`[Stream Proxy] Received ${streams.length} streams.`);
+          break;
+        }
+      } catch (err) {
+        console.log(`[Stream Proxy] Failed ${url}: ${err.message}`);
+      }
+    }
+
+    if (streams.length > 0) {
+      streams = sortStreams(streams, config);
+    }
+
+    res.setHeader('Content-Type', 'application/json');
+    return res.json({ streams });
   }
 
-  res.setHeader('Content-Type', 'application/json');
-  return res.json({ streams });
+  res.status(444).json({ err: 'Unknown Stremio action' });
 });
 
 module.exports = app;
