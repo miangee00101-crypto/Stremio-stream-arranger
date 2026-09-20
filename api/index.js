@@ -3,9 +3,15 @@ const axios = require('axios');
 const path = require('path');
 const app = express();
 
+// Global CORS Middleware - Ensures preflights pass without crashing
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
   next();
 });
 
@@ -85,48 +91,63 @@ function sortStreams(streams, config) {
   });
 }
 
-// Custom Axios instance that mimics a Desktop Browser
 const http = axios.create({
-  timeout: 10000,
+  timeout: 8000,
   headers: {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'application/json, text/plain, */*'
+    'Accept': 'application/json'
   }
 });
 
-// 1. Manifest Endpoint
+// 1. Dynamic Manifest Endpoint
 app.get('/:config/manifest.json', async (req, res) => {
   const config = parseConfig(req.params.config);
-  if (!config) return res.status(400).json({ err: 'Invalid configuration' });
+  
+  if (!config || !config.target) {
+    return res.status(400).json({ err: 'Invalid configuration' });
+  }
+
+  let targetBase = config.target.replace(/\/$/, '');
+  if (!targetBase.endsWith('/manifest.json')) {
+    targetBase = `${targetBase}/manifest.json`;
+  }
 
   try {
-    const targetBase = config.target.replace(/\/$/, '');
-    const response = await http.get(`${targetBase}/manifest.json`);
+    const response = await http.get(targetBase);
     const manifest = response.data;
 
-    manifest.id = `org.custom.arranger.${Buffer.from(config.target).toString('hex').slice(0, 8)}`;
+    // Build valid Stremio manifest overrides
+    manifest.id = `org.custom.arranger.${Buffer.from(config.target).toString('hex').slice(0, 10)}`;
     manifest.name = config.name || 'Arranged Streams';
-    manifest.description = `Custom arranged proxy for ${config.target}`;
+    manifest.description = 'Custom sorted stream proxy.';
 
-    res.json(manifest);
+    res.setHeader('Content-Type', 'application/json');
+    return res.json(manifest);
   } catch (error) {
-    console.error('Manifest Fetch Error:', error.message);
-    res.status(500).json({ err: 'Failed to fetch target manifest' });
+    console.error('Manifest Error:', error.message);
+    
+    // Fallback manifest so Stremio still installs cleanly
+    return res.json({
+      id: `org.custom.arranger.fallback`,
+      version: '1.0.0',
+      name: config.name || 'Arranged Streams',
+      description: 'Custom arranged streams proxy',
+      resources: ['stream'],
+      types: ['movie', 'series'],
+      catalogs: []
+    });
   }
 });
 
-// 2. Stream Endpoint (Handles with and without .json extension)
+// 2. Dynamic Stream Endpoint
 app.get('/:config/stream/:type/:id', async (req, res) => {
   const config = parseConfig(req.params.config);
-  if (!config) return res.status(400).json({ err: 'Invalid configuration' });
+  if (!config) return res.json({ streams: [] });
 
   const { type } = req.params;
-  // Strip .json if Stremio appended it to the ID parameter
   const id = req.params.id.replace(/\.json$/, '');
+  const targetBase = config.target.replace(/\/$/, '').replace(/\/manifest\.json$/, '');
 
-  const targetBase = config.target.replace(/\/$/, '');
-
-  // Try fetching with .json first, then fallback without .json
   let responseData = null;
 
   try {
@@ -146,7 +167,6 @@ app.get('/:config/stream/:type/:id', async (req, res) => {
     return res.json(responseData);
   }
 
-  // Graceful fallback so Stremio doesn't hang
   res.json({ streams: [] });
 });
 
