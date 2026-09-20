@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Stremio Stream Arranger Configurator</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #121214; color: #e1e1e6; max-width: 650px; margin: 40px auto; padding: 20px; }
+    h2 { color: #8257e5; }
+    label { display: block; margin-top: 15px; font-weight: bold; font-size: 0.9em; }
+    input, select { width: 100%; padding: 10px; margin-top: 5px; background: #202024; border: 1px solid #323238; color: #fff; border-radius: 6px; box-sizing: border-box; }
+    button { margin-top: 25px; width: 100%; padding: 12px; background: #8257e5; border: none; color: white; font-weight: bold; border-radius: 6px; cursor: pointer; }
+    button:hover { background: #996dff; }
+    #result { margin-top: 20px; word-break: break-all; padding: 15px; background: #202024; border-radius: 6px; display: none; }
+    a { color: #04d361; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h2>Stream Arranger Configuration</h2>
+  
+  <label>Target Manifest URL</label>
+  <input type="text" id="targetManifest" placeholder="https://other-addon.com/manifest.json">
+
+  <label>Custom Add-on Name</label>
+  <input type="text" id="addonName" value="Arranged Streams">
+
+  <label>Primary Resolution Priority (Comma Separated)</label>
+  <input type="text" id="resPriority" value="1080p,4k,720p,480p,360p">
+
+  <label>File Size Priority</label>
+  <select id="sizePriority">
+    <option value="none">None / Default</option>
+    <option value="smaller">Smaller Files First</option>
+    <option value="larger">Larger Files First</option>
+  </select>
+
+  <label>Grouping Strategy</label>
+  <select id="groupBy">
+    <option value="quality">Group by Quality / Resolution First</option>
+    <option value="provider">Group by Provider / Name First</option>
+  </select>
+
+  <button onclick="generateLink()">Generate Stremio Install Link</button>
+
+  <div id="result">
+    <p>Your Install Link:</p>
+    <a id="stremioLink" href="#" target="_blank">Install on Stremio</a>
+  </div>
+
+  <script>
+    function generateLink() {
+      const target = document.getElementById('targetManifest').value.trim();
+      const name = document.getElementById('addonName').value.trim();
+      const res = document.getElementById('resPriority').value.trim();
+      const size = document.getElementById('sizePriority').value;
+      const group = document.getElementById('groupBy').value;
+
+      if (!target) {
+        alert('Please enter a target manifest URL.');
+        return;
+      }
+
+      const config = {
+        target: target.replace(/\/manifest\.json$/, ''),
+        name: name || 'Arranged Streams',
+        res: res.split(',').map(s => s.trim().toLowerCase()),
+        size: size,
+        group: group
+      };
+
+      const encoded = btoa(JSON.stringify(config));
+      const host = window.location.host;
+      const httpUrl = `${window.location.protocol}//${host}/${encoded}/manifest.json`;
+      const stremioUrl = httpUrl.replace(/^https?:\/\//, 'stremio://');
+
+      const resultDiv = document.getElementById('result');
+      const link = document.getElementById('stremioLink');
+      link.href = stremioUrl;
+      link.innerText = stremioUrl;
+      resultDiv.style.display = 'block';
+    }
+  </script>
+</body>
+</html>
